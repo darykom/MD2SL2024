@@ -1,0 +1,830 @@
+---
+title: "Elaborato per Geospatial Data Analysis (MD2SL 2024) - prof.ssa Bocci"
+author: "Dario Comanducci"
+date: "31.01.25"
+output: html_notebook
+---
+
+# Il PIL degli Stati africani
+
+## Creazione dataset
+```{r}
+rm(list=ls())
+
+library(haven)
+# lettura dati
+setwd("C:/Users/dario/Documents/Projects/Master/Geospatial/")
+stat <- read_dta("data/slave_trade_QJE.dta")
+
+# rinonimo la colonna del PIL Log per capita GDP - from Maddison (2003)
+colnames(stat)[colnames(stat) == "ln_maddison_pcgdp2000"] = "ln_pcgdp"
+colnames(stat)[colnames(stat) == "ln_coastline_area"] = "ln_coast_area"
+colnames(stat)[colnames(stat) == "ln_avg_gold_pop"] = "ln_gold_pop"
+colnames(stat)[colnames(stat) == "ln_avg_oil_pop"] = "ln_oil_pop"
+colnames(stat)[colnames(stat) == "ln_avg_all_diamonds_pop"] = "ln_diamonds_pop"
+colnames(stat)[colnames(stat) == "atlantic_distance_minimum"] = "atlantic_dist_min"
+colnames(stat)[colnames(stat) == "indian_distance_minimum"] = "indian_dist_min"
+colnames(stat)[colnames(stat) == "saharan_distance_minimum"] = "saharan_dist_min"
+colnames(stat)[colnames(stat) == "red_sea_distance_minimum"] = "red_sea_dist_min"
+
+
+# rimuovo variabili non necessarie
+delenda = c(#'abs_latitude', # Absolute latitude
+            #'longitude', #Longitude
+            'ln_export_pop', #Log total slave exports normalized by historic population
+            'island_dum', #Indicator variable for small islands
+            #'region_n', # Region indicator: North
+            'region_s', # Region indicator: South
+            'region_w', # Region indicator: West
+            'region_e', # Region indicator: East
+            'region_c', # Region indicator: Central
+            'ln_pop_dens_1400', # Log population density in 1400
+            'ethnic_fractionalization', # Ethnic fractionalization
+            'state_dev', # State development
+            'land_area') # Land area in millions of square kms
+stat[,delenda] = NULL
+
+library(sf)
+# lettura shapefile
+world = st_read('data/countries/50m/ne_50m_admin_0_countries.shp')
+africa = world[which(world$CONTINENT=='Africa'),c('ISO_A3', 'NAME')]
+
+par(mar=c(0,0,0,9))
+coords <- st_coordinates(st_centroid(africa))
+plot(st_geometry(africa), border='gray', col='snow')
+text(coords[, "X"], coords[, "Y"], labels=africa$ISO_A3, cex=0.5)
+legend(x=st_bbox(africa)$xmax+1, y=st_bbox(africa)$ymax, 
+       legend = paste(africa$ISO_A3, ' ', africa$NAME), cex=0.5, ncol=2, xpd=T)
+par(mar=c(5, 4, 4, 2)+0.1)
+```
+
+### Origine del dataset
+Esiste un legame causale tra le deportazioni degli schiavi (`ln_export_area`) ed il PIL procapite (`ln_pcgdp`) degli odierni Stati africani?
+```{r}
+par(mar=c(4.5,4,0.5,0.5))
+plot(x=stat$ln_export_area, y=stat$ln_pcgdp, pch=16, bty='n', cex=0.7,
+     xlab='ln_export_area', ylab='ln_pcgdp', col='firebrick')
+text(x=stat$ln_export_area, y=stat$ln_pcgdp+0.1, labels=stat$isocode, cex=0.5)
+grid()
+par(mar=c(5,4,4,2)+0.1)
+
+```
+
+
+
+
+### Rimozione isole
+```{r}
+#rimuovo le isole
+delenda = c('SYC', # Seychelles
+            'STP', # Sao Tome & Principe
+            'MUS', # Mauritius
+            'MDG', #	Madagascar
+            'CPV', #	Cape Verde Islands
+            'COM'  #	Comoros
+)
+stat = stat[!(stat$isocode %in% delenda), ]
+africa = africa[!(africa$ISO_A3 %in% delenda),]
+```
+
+
+
+### Ricostruzione degi vecchi Stati africani
+Rispetto a quando i dati sul PIL sono stati raccolti (fine anni '90), la conformazione politica dell'Africa è cambiata; alcuni Stati si sono separati, per cui è necessario riunificare le loro mappe attuali:
+
+- Sudan e Sudan del Sud riuniti nel Sudan
+- Eritrea e Etiopia riuniti in Etiopia
+- Somaliland e Somalia riunificati nella Somalia
+- Sahara Occidentale e Marocco fusi nel Marocco
+
+
+```{r}
+merge_countries <- function(sf_data, iso1, iso2, merged_iso, merged_name)
+{
+   country1 = sf_data[which(sf_data$ISO_A3 == iso1), ]
+   country2 = sf_data[which(sf_data$ISO_A3 == iso2), ]
+   merged_geometry = st_union(st_geometry(country1), st_geometry(country2))
+   
+   merged_data = data.frame(ISO_A3=merged_iso, NAME=merged_name, geometry=merged_geometry)
+   merged_sf = st_sf(merged_data, crs=st_crs(sf_data))
+   
+   sf_data_filtered = sf_data[!(sf_data$ISO_A3 %in% c(iso1, iso2)), ]
+   sf_data_merged = rbind(sf_data_filtered, merged_sf)
+   return(sf_data_merged)
+}
+
+
+sameCountries = intersect(africa$ISO_A3, stat$isocode)
+tofix_stat = which(!stat$isocode %in% sameCountries)
+tofix_shape = which(!africa$ISO_A3 %in% sameCountries)
+(stat[tofix_stat, c('country','isocode')])
+(africa[tofix_shape,c('NAME', 'ISO_A3')])
+
+# Rinonimo Dem. Rep. Congo (COD) in Democratic Republic of Congo (ZAR)
+africa$ISO_A3[which(africa$ISO_A3=='COD')] = 'ZAR'
+africa$NAME[which(africa$ISO_A3=='COD')] = 'Democratic Republic of Congo'
+
+# Eritrea -> Etiopia
+africa = merge_countries(africa, 'ERI', 'ETH', 'ETH', 'Ethiope')
+sameCountries = intersect(africa$ISO_A3, stat$isocode)
+tofix_stat = which(!stat$isocode %in% sameCountries)
+tofix_shape = which(!africa$ISO_A3 %in% sameCountries)
+(stat[tofix_stat, c('country','isocode')])
+(africa[tofix_shape, c('NAME', 'ISO_A3')])
+
+
+# W. Sahara -> Morocco
+africa = merge_countries(africa, 'ESH', 'MAR', 'MAR', 'Morocco')
+sameCountries = intersect(africa$ISO_A3, stat$isocode)
+tofix_stat = which(!stat$isocode %in% sameCountries)
+tofix_shape = which(!africa$ISO_A3 %in% sameCountries)
+(stat[tofix_stat, c('country','isocode')])
+(africa[tofix_shape, c('NAME', 'ISO_A3')])
+
+# Somaliland -> Somalia
+africa = merge_countries(africa, '-99', 'SOM', 'SOM', 'Somalia')
+sameCountries = intersect(africa$ISO_A3, stat$isocode)
+tofix_stat = which(!stat$isocode %in% sameCountries)
+tofix_shape = which(!africa$ISO_A3 %in% sameCountries)
+(stat[tofix_stat, c('country','isocode')])
+(africa[tofix_shape, c('NAME', 'ISO_A3')])
+
+# S. Sudan -> Sudan
+africa = merge_countries(africa, 'SSD', 'SDN', 'SDN', 'Sudan')
+sameCountries = intersect(africa$ISO_A3, stat$isocode)
+tofix_stat = which(!stat$isocode %in% sameCountries)
+tofix_shape = which(!africa$ISO_A3 %in% sameCountries)
+(stat[tofix_stat, c('country','isocode')])
+(africa[tofix_shape,c('NAME', 'ISO_A3')])
+```
+
+### Rimozione delle isolette di ogni Stato
+Rimuoviamo le isole appartenenti ad alcuni Stati (in particolare un arcipelago molto a Sud sotto la nazionalità del Sudafrica)
+
+```{r}
+### Rimozione isole
+remove_islands <- function(sf, iso_a3)
+{
+   country = sf[which(sf$ISO_A3 == iso_a3), ]
+   
+   if (nrow(country) > 0)
+   {
+      
+      geom_type <- st_geometry_type(country)[1] # Get the geometry type of the FIRST feature
+      
+      if (geom_type %in% c("MULTIPOLYGON"))
+      {
+         #country_polygons <- st_cast(country, "POLYGON")
+         country_polygons <- suppressWarnings(st_cast(country, "POLYGON")) # Suppress warning here
+
+         areas = st_area(country_polygons)
+         largest_polygon = country_polygons[which.max(areas),]
+
+         # Extract the geometry of the largest polygon
+         country_geom = st_geometry(largest_polygon)[[1]]
+         # Create a new sf object for the mainland
+         country_mainland_sf = st_sf(data.frame(ISO_A3 = iso_a3, NAME = country$NAME[1]),
+                                    geometry = st_sfc(country_geom, crs = st_crs(country)))
+
+
+         sf_filtered = sf[!(sf$ISO_A3 %in% iso_a3), ]
+         sf_final <- rbind(sf_filtered, country_mainland_sf)
+         
+         return(sf_final)
+      }
+   }
+   
+   return(sf)
+}
+
+
+# Rimozione delle isole di ogni stato
+delenda = c('TUN', # Tunisia
+            'TZA', # Tanzania
+            'ZAF', # S. Africa
+            'SLE', # Sierra Leone
+            'MRT', # Mauritania
+            'MWI', # Malawi
+            'GNB', # Guinea-Bissau
+            'GNQ', # Eq. Guinea
+            'ETH') # Ethiope
+
+par(mfrow = c(1, 2), mar=c(0,0,1,0))
+for (c in delenda)
+{
+   plot(st_geometry(africa[which(africa$ISO_A3==c),'ISO_A3']), main=c, col='snow')
+   africa = remove_islands(africa, c)
+   plot(st_geometry(africa[which(africa$ISO_A3==c),'ISO_A3']), main=c, col='snow')
+}
+par(mfrow = c(1,1), mar=c(5, 4, 4, 2)+0.1)
+
+```
+
+### Merge dei dataset
+```{r}
+names(africa)[1:2] = names(stat[1:2])
+stat$country = NULL #non mi serve più
+ds = merge(africa, stat, by = "isocode")
+
+coords <- st_coordinates(st_centroid(ds))
+
+par(mar=c(0,0,0,8))
+plot(st_geometry(ds), border='gray', col='snow')
+text(coords[, "X"], coords[, "Y"], labels=ds$isocode, cex=0.5)
+legend(x=st_bbox(ds)$xmax+1, y=st_bbox(ds)$ymax, 
+       legend = paste(ds$isocode, ' ', ds$country), cex=0.5, ncol=2, xpd=T)
+par(mar=c(5, 4, 4, 2)+0.1)
+
+```
+
+
+### Proiezione cartografica e conversione in SpatialPolygonsDataFrame
+![*EPSG:2312* Garoua / UTM zone 33N (https://spatialreference.org/ref/epsg/2312/)](./data/EPSG_2312.png)
+
+
+```{r}
+
+#utm <- st_crs("+proj=utm +zone=33 +north +datum=WGS84 +units=m +no_defs")
+utm <- st_crs(2312)
+sf_utm <- st_transform(ds, crs = utm)
+st_crs(sf_utm)
+
+par(mfrow = c(1, 2), mar=c(0,0,2,0))
+plot(st_geometry(ds), col = "lightcyan", main = "Original Projection")
+plot(st_geometry(sf_utm), col = "lightyellow", main = "EPSG:2312 Projection")
+par(mfrow = c(1, 1), mar=c(5, 4, 4, 2)+0.1)
+
+# Lo salvo come shapefile per aprirlo in Geoda
+# Save as Shapefile
+st_write(sf_utm, "./data/slaveTrade.shp", driver="ESRI Shapefile", delete_layer=T) 
+
+# Lo converto in SpatialPolygonDataFrame per ri-usare codice prof
+slaveTrade = as_Spatial(sf_utm)
+```
+
+# Descrizione del dataset
+
+- `isocode` Country isocode
+- `country` Country name
+- `ln_pcgdp` Log per capita GDP - from Maddison (2003)
+- `ln_export_area` Log total slave exports normalized by land area
+- `colony0` Colonizer indicator: not colonized
+- `colony1` Colonizer indicator: Britan
+- `colony2` Colonizer indicator: France
+- `colony3` Colonizer indicator: Portugal
+- `colony4` Colonizer indicator: Belgium
+- `colony5` Colonizer indicator: Spain
+- `colony6` Colonizer indicator: UN
+- `colony7` Colonizer indicator: Italy
+- `abs_latitude` Absolute latitude
+- `longitude` Longitude
+- `rain_min` Min of monthly average rainfall (mm)
+- `humid_max` Max of monthly afternoon avg humidity (%)
+- `low_temp` Min of avg monthly low temp (C)
+- `ln_coastline_area` Log (coastline/land_area)
+- `islam` Percent Islamic
+- `legor_fr` Legal origin indicator: French
+- `legor_uk` Legal origin indicator: British
+- `region_n` Region indicator: North Africa
+- `ln_avg_gold_pop` Log gold production per capita
+- `ln_avg_oil_pop` Log oil production per capita
+- `ln_avg_all_diamonds_pop` Log diamond production per capita
+- `atlantic_distance_minimum` Minimum Atlantic distance (000s of kms)
+- `indian_distance_minimum` Minimum Indian distance (000s of kms)
+- `saharan_distance_minimum` Minimum Saharan distance (000s of kms)
+- `red_sea_distance_minimum` Minimum Red Sea distance (000s of kms)
+
+
+
+
+```{r}
+library(sp)
+library(spdep)
+library(spatialreg)
+library(RColorBrewer)
+library(fields) # For the colorbar
+library(gridExtra)
+
+matlab.like.hot <- function(n) 
+{
+   
+   #my_gradient = c('gray25', 'red', 'yellow', 'floralwhite')
+   my_gradient = c('gray25', 'red', 'yellow', 'cornsilk')
+   #my_gradient = c('gray25', 'red', 'yellow', 'lightgoldenrodyellow')
+   #my_gradient = c('gray25', 'red', 'yellow', 'lightyellow')
+   #my_gradient = c('gray25', 'red', 'yellow', 'lemonchiffon')
+   #my_gradient = c('gray25', 'red', 'yellow', 'snow')
+   #my_gradient = c('gray25', 'red', 'yellow', 'ivory')
+   return (colorRampPalette(my_gradient, space = "Lab")(n))
+}
+
+plotMapData <- function(shp, vname, min_v=NA, max_v=NA)
+{
+   n_colors <- 16
+   # spectral_colors = brewer.pal(11, "Spectral")
+   # spectral_r_palette <- colorRampPalette(rev(spectral_colors)) # Reverse for _r
+   palette = matlab.like.hot(n_colors) #spectral_r_palette(n_colors)
+   
+   idv = which(names(shp)==vname)
+   vals = shp[[idv]]
+   
+   if (is.na(min_v)) (min_v = min(vals))
+   if (is.na(max_v)) (max_v = max(vals))
+   if (min_v == max_v)
+   {
+      (min_v = floor(min(vals)))
+      (max_v = ceiling(max(vals)))
+   }
+   
+   norm_v = ((vals - min_v) / (max_v - min_v))
+   norm_v[norm_v < 0] = 0
+   norm_v[norm_v > 1] = 1
+   pcol = palette[round(norm_v * (n_colors-1)) + 1]
+   
+   par(mar = c(0.0, 0.0, 2.0, 3))
+   plot(shp, col = pcol,  lwd=0.5, main=vname, border='lightskyblue4')
+   # Colorbar
+   image.plot(legend.only = TRUE, zlim = c(min_v, max_v),
+           col = palette,
+           axis.args=list(cex.axis=0.8))
+   par(mar=c(5,4,4,2) + 0.1)# Reset to default layout
+
+   # spplot(shp, vname, main=vname, lwd=0.5,
+   #        col = 'lightskyblue4',
+   #     col.regions = palette,
+   #     par.settings = list(axis.line = list(col = NA)))
+
+   
+}
+
+showData <- function(shp, col_name, min_v=NA, max_v=NA)
+{
+   #par(mfrow = c(1, 2), mar = c(3, 4, 1.0, 0.5))
+   par(mfrow = c(1, 2), mar = c(2, 4, 1.0, 0.5))
+   
+   h = hist(shp[[col_name]],main=col_name,xlab='', 
+        col='lightskyblue3', border='lightskyblue4')#, breaks='FD',)
+   grid(lty='solid', lwd=0.5, col='white', nx=NA, ny=NULL)
+   
+   plotMapData(shp, col_name)
+   
+   par(mfrow=c(1,1), mar=c(5,4,4,2)+0.1)
+}
+
+#--------------------------------------------------------------------
+
+
+
+#ln_maddison_pcgdp2000
+showData(slaveTrade,'ln_pcgdp')
+#ln_export_area
+showData(slaveTrade,'ln_export_area')
+
+# rain_min
+showData(slaveTrade,'rain_min')
+# humid_max
+showData(slaveTrade,'humid_max')
+# low_temp
+showData(slaveTrade,'low_temp')
+# ln_coastline_area
+showData(slaveTrade,'ln_coast_area')
+
+# islam
+showData(slaveTrade,'islam')
+
+# ln_avg_gold_pop
+showData(slaveTrade,'ln_gold_pop')
+# ln_avg_oil_pop
+showData(slaveTrade,'ln_oil_pop')
+# ln_avg_all_diamonds_pop
+showData(slaveTrade,'ln_diamonds_pop')
+
+# atlantic_distance_minimum
+showData(slaveTrade,'atlantic_dist_min')
+# indian_distance_minimum
+showData(slaveTrade,'indian_dist_min')
+# saharan_distance_minimum
+showData(slaveTrade,'saharan_dist_min')
+# red_sea_distance_minimum
+showData(slaveTrade,'red_sea_dist_min')
+
+#..........................................................
+colony_codes = c('--', 'GB', 'FR', 'PT', 'BE', 'ES', 'UN', 'IT')
+#colony_names = names(slaveTrade)[5:12]
+colony_names = c('colony0', 'colony1', 'colony2', 'colony3', 'colony4', 'colony5', 'colony6', 'colony7')
+colony_id = max.col(stat[,colony_names])
+slaveTrade$colony = as.factor(colony_codes[colony_id])
+
+legor_codes = c('FR', 'GB', '--')
+legor_names = c('legor_fr', 'legor_uk')
+legor_id = max.col(stat[,legor_names])
+slaveTrade$legor = legor_codes[legor_id]
+slaveTrade$legor[rowSums(stat[,legor_names]) == 0] = '--'
+slaveTrade$legor = as.factor(legor_codes[legor_id])
+
+library(gridExtra)
+#pL = 
+spplot(slaveTrade, 'colony', main='colonizers',  lwd=0.5,
+            col.regions = brewer.pal(n=length(colony_codes), name='Pastel2'), par.settings = list(axis.line = list(col = NA)))
+
+# pR = 
+spplot(slaveTrade, 'legor', main='legislative origin', lwd=0.5,
+            col.regions = brewer.pal(n=length(legor_codes), name='Pastel1'), par.settings = list(axis.line = list(col = NA)))
+#grid.arrange(pL, pR, ncol = 2)
+
+```
+
+
+## Analisi di correlazione (variabili continue)
+```{r}
+library(corrplot)
+#(preds = names(slaveTrade)[c(3:4,13:18, 20:26)])
+preds = c('ln_export_area', 'abs_latitude', 'longitude',
+          'rain_min', 'humid_max', 'low_temp', 'ln_coast_area',
+          'islam', 'ln_gold_pop', 'ln_oil_pop', 'ln_diamonds_pop',
+          'atlantic_dist_min', 'indian_dist_min', 
+          'saharan_dist_min', 'red_sea_dist_min')
+corpredictor = cor(slaveTrade@data[,preds], method="pearson")
+
+par(mar=c(0,0,0,0))
+corrplot(corpredictor, type = "upper", col=rev(colorRampPalette(brewer.pal(n=11, name='RdBu'))(100)), tl.col = "black", tl.srt = 45, tl.cex=0.8)
+par(mar=c(5,4,4,2)+0.1)
+
+(corpredictor['abs_latitude', 'low_temp'])
+(corpredictor['longitude', c('atlantic_dist_min', 'indian_dist_min', 'red_sea_dist_min')])
+(corpredictor['islam', 'saharan_dist_min'])
+(corpredictor['atlantic_dist_min', 'red_sea_dist_min'])
+
+```
+
+
+
+# Ispezione geospaziale dei dati
+
+
+## Determinazione dei vicini
+```{r}
+slaveTrade.nb <- poly2nb(slaveTrade)
+slaveTrade.lw <- nb2listw(slaveTrade.nb, style = "W")
+slaveTrade.nb.lag = nblag(slaveTrade.nb, maxlag=5)
+
+
+summary(slaveTrade.nb)
+summary(slaveTrade.lw)
+
+cnb = coordinates(slaveTrade)
+par(mfrow=c(1,1), mar=c(0,0,1,0))
+plot(slaveTrade, border='gray', lwd=0.5, main='prox. lag 1')
+plot(slaveTrade.nb.lag[[1]], cnb, add=T, col='red', pch=16, cex=0.5, lwd=0.5)
+#
+par(mfrow=c(2,2), mar=c(0,0,1,0))
+#
+plot(slaveTrade, border='gray', main='prox. lag 2', lwd=0.5)
+plot(slaveTrade.nb.lag[[2]], cnb, add=T, col='red', pch=16, cex=0.3, lwd=0.5)
+#
+plot(slaveTrade, border='gray', main='prox. lag 3', lwd=0.5)
+plot(slaveTrade.nb.lag[[3]], cnb, add=T, col='red', pch=16, cex=0.3, lwd=0.5)
+#
+plot(slaveTrade, border='gray', main='prox. lag 4', lwd=0.5)
+plot(slaveTrade.nb.lag[[4]], cnb, add=T, col='red', pch=16, cex=0.3, lwd=0.5)
+#
+plot(slaveTrade, border='gray', main='prox. lag 5', lwd=0.5)
+plot(slaveTrade.nb.lag[[5]], cnb, add=T, col='red', pch=16, cex=0.3, lwd=0.5)
+par(mfrow=c(2,2), mar=c(5, 4, 4, 2)+0.1)
+
+```
+
+## Tabella complessiva dei global Moran per tutte le variabili
+```{r}
+library(pgirmess)
+
+moran_list = list()
+#cvars = names(slaveTrade)[c(3,4,13:26)]
+cvars = c("ln_pcgdp", "ln_export_area", "rain_min", "humid_max", "low_temp", "ln_coast_area",
+"islam", 
+"ln_gold_pop","ln_oil_pop", "ln_diamonds_pop",
+"atlantic_dist_min", "indian_dist_min", "saharan_dist_min", "red_sea_dist_min")
+
+for (varname in cvars)
+{
+   vals = slaveTrade[[varname]]
+   resM = moran.test(vals, slaveTrade.lw)
+   resG = geary.test(vals, slaveTrade.lw)
+   moran_list = rbind(moran_list, c(varname, resM$estimate[1], resM$p.value, resG$estimate[1], resG$p.value))
+   
+corD<-correlog(coordinates(slaveTrade), slaveTrade[[varname]], method="Moran")
+
+par(mar=c(4, 3, 2, 0))
+barplot(corD[,'coef'], names.arg=1:length(corD[,'coef']), yaxt = "n",
+        main=paste('correlog. ', varname), xlab='lag', ylim=c(-1,1),
+        col='lightskyblue3', border='lightskyblue4')
+axis(2,  # 2 indicates the left axis (y-axis)
+     at = seq(-1,1,0.2),  # Positions of the ticks
+     labels = seq(-1,1,0.2))
+#grid(lty='solid', lwd=0.5, col='white', nx=NA, ny=NULL)
+abline(h = seq(-1,1,0.2), col = "white", lty = 'solid', lwd=0.5) # Add gridlines at y_ticks
+par(mar=c(5, 4, 4, 2)+0.1)
+print(varname)
+
+}
+print(moran_list)
+```
+
+```{r}
+showMoran <- function(shf, lmii, tlab, roi)
+{
+   n_colors = 256
+   my_gradient = c('deepskyblue3', 'snow', 'firebrick3')
+   palette = colorRampPalette(my_gradient, space = "Lab")(n_colors)
+
+   
+   vals = lmii[,1]
+   #min_v = min(vals); max_v = max(vals);
+   ref_v = 1;#max(abs(vals))
+   min_v = -ref_v; max_v = ref_v;
+   norm_v = (vals-min_v)/(max_v-min_v)
+   norm_v[norm_v < 0] = 0
+   norm_v[norm_v > 1] = 1
+   pcol = palette[round(norm_v * (n_colors-1)) + 1]
+   
+   #tcol = ifelse(lmii[,5]>0.05, "darkgrey", "black")
+   tcol = ifelse(1:length(vals) %in% roi, 'black', 'darkgray')
+   lcex = ifelse(1:length(vals) %in% roi, 0.7, 0.5)
+   
+   par(mar = c(0.0, 0.0, 1.0, 3))
+   
+   plot(shf, col=pcol, lwd=0.5, border='olivedrab', main=paste('local Moran: ', tlab))
+
+   # Colorbar
+   image.plot(legend.only = TRUE, zlim = c(min_v, max_v),
+           col = palette, 
+           axis.args=list(cex.axis=0.8))
+
+   coords = coordinates(slaveTrade)
+   text(coords[,1], coords[,2], labels=ds$isocode, cex=lcex, col=tcol)
+   
+   par(mar=c(5,4,4,2)+0.1)
+   
+}
+
+
+showClusterMap <- function(ds, lmii, col_lab, significance_level=0.05)
+{
+   par(mar = c(0.0, 0.0, 1.0, 4))
+   p_value = lmii[,5]
+   Moran_I = lmii[,1]
+   llist = c('HH',   'LL',     'HL',        'LH',        'NS')
+   clist = c('firebrick', 'royalblue', 'indianred1', 'lightblue1', 'lightgray')
+   lid <- ifelse(p_value < significance_level,
+                        ifelse(Moran_I > 0,
+                               ifelse(ds[[col_lab]] > mean(ds[[col_lab]]), 1, 2),
+                               ifelse(ds[[col_lab]] > mean(ds[[col_lab]]), 3, 4)),
+                        5)
+   cluster = llist[lid]
+   ccol = clist[lid]
+   plot(ds, col=ccol, lwd=0.5, border='snow', main=paste('clusters: ', col_lab))
+   legend("right", legend = llist, fill = clist, bty='n')
+   par(mar=c(5,4,4,2)+0.1)
+}
+```
+
+
+## Variabile di outcome (ln_pcgdp)
+
+### Media
+```{r}
+
+computeLocalAvg <- function(dsp, variable_name, wlist)
+{
+   local_averages <- numeric(nrow(dsp)) # Initialize a vector to store the results
+   for (i in 1:nrow(dsp)) 
+   {
+      neighbors_i <- wlist$neighbours[[i]] #nblist[[i]] # Neighbors of area i
+      weights_i <- wlist$weights[[i]] #wlist[[i]]
+      
+      if (length(neighbors_i) > 0) 
+      { # Check if the area has neighbors (for islands or edge cases)
+         neighbor_values <- dsp@data[neighbors_i, variable_name]  # values of the neighbors
+         #print(neighbor_values)
+         local_averages[i] <- sum(weights_i * neighbor_values)/sum(weights_i) # weighted average
+      }
+      else
+      { # Handle cases with no neighbors (e.g., islands):
+         local_averages[i] <- dsp@data[i, variable_name] 
+         warning(paste("Area", i, "has no neighbors.")) # or print a message
+      }
+   }
+   
+   return(local_averages)
+}
+
+
+showMapByQuintiles <- function(dsp, variable_name, mydata)
+{
+   dsp_sf = st_as_sf(dsp)  # Convert to sf object
+   dsp_sf$mydata <- mydata
+
+   brks=quantile(mydata, seq(0, 1, 0.2), na.rm=T);
+   brks[1] = floor(brks[1]*10)/10; 
+   brks[length(brks)]=ceiling(brks[length(brks)]*10)/10
+   spplot(as_Spatial(dsp_sf), 'mydata', main=paste('Quintile cuts: ', variable_name), lwd=0.5,
+       at = brks,
+       col = 'lightskyblue4',
+       # col.regions = colorRampPalette(rev(brewer.pal(11, "Spectral")))(256),
+       col.regions = matlab.like.hot(16),
+       par.settings = list(axis.line = list(col = NA)))
+}
+
+
+# brks=quantile(slaveTrade$ln_pcgdp, seq(0, 1, 0.2), na.rm=T);
+# brks[1] = floor(brks[1]*10)/10; 
+# brks[length(brks)]=ceiling(brks[length(brks)]*10)/10
+# spplot(slaveTrade, c('ln_pcgdp'), main='ln_pcgdp', lwd=0.5,
+#        at = brks,
+#        #col.regions = colorRampPalette(rev(brewer.pal(11, "Spectral")))(256),
+#        col.regions = matlab.like.hot(16),
+#        par.settings = list(axis.line = list(col = NA)))
+
+ln_pcgdp_avg = computeLocalAvg(slaveTrade, 'ln_pcgdp', slaveTrade.lw)
+
+dsp_dummy=slaveTrade; dsp_dummy$ln_pcgdp_avg = ln_pcgdp_avg
+showData(dsp_dummy,'ln_pcgdp_avg')
+
+showMapByQuintiles(slaveTrade, 'ln_pcgdp_avg', ln_pcgdp_avg)
+
+moran.test(slaveTrade$ln_pcgdp, slaveTrade.lw)
+corD<-correlog(coordinates(slaveTrade), slaveTrade$ln_pcgdp, method="Moran")
+
+
+corD = cbind(corD, corD[,1:2]); colnames(corD)[5:6] = c('my_Moran', 'my_pvalue')
+for (k in 1:nrow(corD))
+{
+   if (k<=length(slaveTrade.nb.lag))
+   {
+      nb_lag = slaveTrade.nb.lag[[k]]
+      lw_klag <- nb2listw(nb_lag, style = 'W')
+      resk = moran.test(slaveTrade$ln_pcgdp, lw_klag)
+      corD[k,5] = resk$estimate[1];
+      corD[k,6] = resk$p.value;
+   }
+   else
+   {
+      corD[k,5] = NA
+      corD[k,6] = NA
+   }
+}
+(corD)
+plot(x=1:nrow(corD), y=corD[,'coef'], col='black', xlim=c(0,nrow(corD)), bty='n'); grid()
+points(x=1:nrow(corD), y=corD[,'my_Moran'], col='firebrick', pch=16, add=T)
+abline(a=0,b=0,lwd=1)
+
+corD<-correlog(coordinates(slaveTrade), ln_pcgdp_avg, method="Moran")
+
+par(mar=c(4, 3, 2, 0))
+barplot(corD[,'coef'], names.arg=1:length(corD[,'coef']), yaxt = "n",
+        main=paste('correlog. ', 'ln_pcgdp_avg'), xlab='lag', ylim=c(-1,1),
+        col='lightskyblue3', border='lightskyblue4')
+axis(2,  # 2 indicates the left axis (y-axis)
+     at = seq(-1,1,0.2),  # Positions of the ticks
+     labels = seq(-1,1,0.2))
+#grid(lty='solid', lwd=0.5, col='white', nx=NA, ny=NULL)
+abline(h = seq(-1,1,0.2), col = "white", lty = 'solid', lwd=0.5) # Add gridlines at y_ticks
+par(mar=c(5, 4, 4, 2)+0.1)
+
+
+```
+
+### Local Moran
+```{r}
+set.seed(42)
+moran.plot(slaveTrade$ln_pcgdp, slaveTrade.lw,
+           xlab='ln_pcgdp', asp=1, bty='n')
+print(slaveTrade$isocode[c(5,19,23)])
+
+lmii = localmoran(slaveTrade$ln_pcgdp, slaveTrade.lw)
+# lmii = localmoran_perm(slaveTrade$ln_pcgdp, slaveTrade.lw, nsim=999, iseed=123456789)
+
+showMoran(slaveTrade, lmii, 'ln_pcgdp', c(5,19,23))
+
+showClusterMap(slaveTrade, lmii, 'ln_pcgdp', significance_level=0.05)
+```
+
+## Trattamento (ln_export_area)
+### Media
+```{r}
+
+ln_export_area_avg = computeLocalAvg(slaveTrade, 'ln_export_area', slaveTrade.lw)
+
+dsp_dummy=slaveTrade; dsp_dummy$ln_export_area_avg = ln_export_area_avg
+showData(dsp_dummy,'ln_export_area_avg')
+
+showMapByQuintiles(slaveTrade, 'ln_export_area', ln_export_area_avg)
+```
+
+
+### Local Moran
+```{r}
+moran.test(slaveTrade$ln_export_area, slaveTrade.lw)
+
+mr = moran.plot(slaveTrade$ln_export_area, slaveTrade.lw, 
+           xlab='ln_export_area', asp=1, bty='n')
+
+print(slaveTrade$isocode[c(40,43)])
+
+lmii = localmoran(slaveTrade$ln_export_area, slaveTrade.lw)
+# lmii = localmoran_perm(slaveTrade$ln_export_area, slaveTrade.lw, nsim=999, iseed=123456789)
+showMoran(slaveTrade, lmii, 'ln_export_area',  c(40,43))
+showClusterMap(slaveTrade, lmii, 'ln_export_area')
+```
+
+
+# Modelli di Regressione
+```{r}
+fmla <- ln_pcgdp ~ ln_export_area + colony1 + colony2 +colony3 + colony4 + colony5 + colony6 + colony7 + rain_min + humid_max + low_temp + ln_coast_area + islam + legor_fr + region_n + ln_gold_pop + ln_oil_pop + ln_diamonds_pop
+```
+
+## Modello lineare
+```{r}
+modLM <- lm(fmla, data = slaveTrade)
+summary(modLM)
+```
+
+### Test di Moran sui residui
+```{r}
+moran.test(residuals(modLM), slaveTrade.lw)
+lm.morantest(modLM, slaveTrade.lw)
+```
+
+### Test di Rao
+Anche se dal test di Moran risulta assenza di struttura spaziale sui residui, e pertanto quanto osservato su `ln_pcgdp` è già spiegato dalle covariate impiegate, applichiamo anche il test dei moltiplicatori di Lagrange (o test di Rao) per valutare la necessità di un modello a struttura spaziale, tramite `lm.RStests()`.
+
+La funzione `lm.RStests()` restituisce 
+
+- il test RSerr (LM-error, per SEM), che verifica l'autocorrelazione spaziale nel termine di errore; 
+- il test RSlag (LM-lag, per SLM), che verifica l'autocorrelazione spaziale nella variabile dipendente; 
+- le versioni robuste dei precedenti test;
+- il test SARMA che verifica la dipendenza combinata tra lag spaziale ed errore. 
+
+```{r}
+#Rao's score (a.k.a Lagrange multiplier) diagnostics
+lmtest = lm.RStests(modLM,listw = slaveTrade.lw, test="all" )
+summary(lmtest)
+```
+Gli elvati p-value forniti da tutti i test sembrano indicare che non esista nessuna dipendenza statisticamente significativa da una struttura spaziale.
+
+Decidiamo comunque di applicare anche gli Spatial Error Model (SEM), Spatial Lag Model (SLM) e lo Spatial Durbin Model (SDM) per ulteriore conferma.
+
+
+## Spatial Error Model
+```{r}
+library(spatialreg)
+modSEM <- errorsarlm(fmla, data = slaveTrade, listw = slaveTrade.lw)
+summary(modSEM)
+modSEM$coefficients["lambda"]
+```
+
+### Test di Moran sui residui
+```{r}
+moran.test(residuals(modSEM), slaveTrade.lw)
+```
+
+## Spatial Lag Model
+```{r}
+modSLM <- lagsarlm(fmla, data=slaveTrade, listw=slaveTrade.lw)
+summary(modSLM)
+```
+
+### Test di Moran sui residui
+```{r}
+moran.test(residuals(modSLM), slaveTrade.lw)
+```
+
+## Spatial Durbin Model
+```{r}
+modSDM <- lagsarlm(fmla, data=slaveTrade, listw=slaveTrade.lw, type='mixed')
+summary(modSDM)
+```
+
+### Test di Moran sui residui
+```{r}
+moran.test(residuals(modSDM), slaveTrade.lw)
+```
+
+## Confronto degli AIC
+```{r}
+cmpMat = c()
+cmpMat[1] = AIC(modLM)
+cmpMat[2] = AIC(modSEM)
+cmpMat[3] = AIC(modSLM)
+cmpMat[4] = AIC(modSDM)
+
+names(cmpMat) = c('LM', 'SEM', 'SLM', 'SDM')
+(cmpMat)
+```
+
+# Conclusioni
+
+- Tutti i modelli testati riportano un indice di Moran sui residui statisticamente non diverso da 0
+- Ne consegue che in tutti i casi le covariate riescono a spiegare la struttura spaziale rilevata dall'indice di Moran sulla variabile dipendente %l'indice di Moran osservato ed inizialmente imputato ad lieve trend
+- Il modello con AIC più basso è lo Spatial Durbin Model (SDM)
+Tuttavia, applicando il rasoio di Occam, possiamo optare per il modello più semplice di tutti: quello lineare (LM)
