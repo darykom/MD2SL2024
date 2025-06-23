@@ -1,0 +1,813 @@
+---
+title: "Elaborato per Network Data Analysis: il dataset Marvel Comic Characters Partnerships"
+output: html_notebook
+---
+
+# Descrizione di base della rete 
+
+Il dataset è stato reperito al seguente link: 
+
+https://www.kaggle.com/datasets/trnguyen1510/the-marvel-comic-characters-partnerships
+
+I dati sono una **rete non pesata**, contenenti **350 nodi e 346 archi**, dove ogni **nodo** rappresenta un **personaggio** dell'universo Marvel e ogni **arco** rappresenta l'esistenza di una **"interazione stretta"** (*partnership*) tra due personaggi *stabilita sui link presenti nelle pagine Wikipedia di ciascun personaggio*, ricorrendo alla sezione "partnerships" presente in molte (ma non in tutte) le **infobox** riportate a lato della pagina. 
+
+Non era inizialmente chiaro se il grafo andasse considerato orientato o meno: il dataset è infatti fornito in due file csv separati, uno con i nodi e l'altro per gli archi, contenente la lista delle coppie di nodi indicati come `source` e `target`.
+Si nota tuttavia che, **se trattato come grafo direzionato, la sua reciprocità vale 0:** ciò si scontra con l'evidenza sperimentale di almeno 4 collaborazioni documentate invece come reciproche nelle corrispondenti pagine Wikipedia, ossia
+
+* `Spider-Man` (https://en.wikipedia.org/wiki/Spider-Man) & `Black Cat` (https://en.wikipedia.org/wiki/Black_Cat_(Marvel_Comics))
+* `Spider-Man` (https://en.wikipedia.org/wiki/Spider-Man) & `Spider-Man (Miles Morales)` (https://en.wikipedia.org/wiki/Miles_Morales)
+* `Captain America` (https://en.wikipedia.org/wiki/Captain_America) & `Bucky Barnes` (https://en.wikipedia.org/wiki/Bucky_Barnes)
+* `Iron Man` (https://en.wikipedia.org/wiki/Iron_Man) & `War Machine` (https://en.wikipedia.org/wiki/War_Machine)
+
+Ad eccezione di `Spider-Man` & `Spider-Man (Miles Morales)` (essendo Miles Morales un personaggio piuttosto recente, apparso nel 2011), le altre connessioni sono da ritenere "storiche" (alcune risalenti alla *golden age*) ed è poco palusibile che non fossero già documentate correttamente nel 2018, anno di creazione del dataset.
+Pertanto, **il dataset viene qui considerato come un grafo non direzionato affinché rifletta correttamente i legami di partnerships,** per riuscire a dare un'intepretazione "sensata" ai risultati trovati sul grafo.
+
+L'interpretazione non orientata del grafo trova conferma nel repository
+https://networks.skewed.de/net/marvel_partnerships#fnref:icon
+dove viene classificato come _Undirected_.
+
+Il dataset contiene anche un **attributo categoriale per ciascun nodo**, dividendo i personaggi in **eroi** (0), **cattivi** (1) e personaggi "grigi" altrimenti detti **antieroi** (2); questi ultimi possiedono qualità sia degli eroi che dei cattivi, ossia personaggi solitamente privi di qualità eroiche che a volte compiono azioni moralmente corrette, ma agendo principalmente per interesse personale o in modi che sfidano i codici etici convenzionali.
+
+
+### Osservazione
+Il dataset potrebbe essere ricondotto ad una situazione reale immaginando che i personaggi Marvel siano gli **impiegati di un'azienda** afferenti principalmente a **due reparti distinti** (eroi e cattivi), magri in competizione, più qualche altra figura con un ruolo meno strutturato (gli antieroi), e che si voglia studiare le **interazioni strette tra i vari dipendenti.**
+
+## Caricamento e preparazione dei dati
+Il dataset scaricato è organizzato in due distinti file: `nodes.csv` e `edges.csv`:
+
+- in `nodes.csv` sono presenti la colonna `group` (la natura del personaggio), `id` (il nome del personaggio) e `size` (il numero di connessioni che ciascun personaggio ha con gli altri del dataset).
+- il file `edges.csv` contiene invece la colonna `source` e la colonna `target` indicanti il verso *presunto* della relazione tra i personaggi riportati nelle due colonne.
+
+Si procede al loro caricamento in R e alla semplificazione di alcuni nomi, cercando laddove possibile di limitare la lunghezza di quelli più prolissi, in particolare rimuovendo le indicazioni tra parentesi come in `'Cyclone (Marvel Comics)'`).
+
+```{r}
+rm(list=ls())
+setwd("C:/Users/dario/Documents/Projects/Master/Networks/")
+
+library(igraph)
+
+myseed = 6174
+
+# lettura file csv   
+nodes_data = read.csv('nodes.csv') 
+edges_data = read.csv('edges.csv')
+
+# Semplificazione dei nomi lunghi
+orig_char = c('Blackout (Lilin)', 
+              'Blackout (Marcus Daniels)', 
+              'Hawkeye (Kate Bishop)', 
+              'Iron Man (Ultimate Marvel character)', 
+              'Spider-Man (Miles Morales)', 
+              'Spider-Woman (Gwen Stacy)', 
+              'Spider-Woman (Jessica Drew)'
+)
+new_char = c('Blackout L.', 
+             'Blackout M.D.', 
+             'Hawkeye K.B.', 
+             'Iron Man U.M.c.', 
+             'Spider-Man M.M.', 
+             'Spider-Woman G.S.', 
+             'Spider-Woman J.D.'
+)
+for (n in 1:length(orig_char))
+{
+   nodes_data$id[nodes_data$id == orig_char[n]] = new_char[n]
+   edges_data$source[edges_data$source == orig_char[n]] = new_char[n]
+   edges_data$target[edges_data$target == orig_char[n]] = new_char[n]
+}
+# rimozione del contenuto tra parentesi
+nodes_data$id = gsub("\\s*\\([^\\)]+\\)", "", nodes_data$id)
+edges_data$source = gsub("\\s*\\([^\\)]+\\)", "", edges_data$source)
+edges_data$target = gsub("\\s*\\([^\\)]+\\)", "", edges_data$target)
+
+# converto i codici 0,1,2 in group in una versione testuale
+group = nodes_data$group
+nodes_data$group = NULL #rimuovo la colonna group, crea problemi a graph_from_data_frame
+group_labels = c("hero", "villain", "antihero")
+nodes_data$category = as.factor(group_labels[group + 1]) #reinserisco group come variabile categorica
+
+# associo dei colori alle categorie
+group_colors = c('darkgray', 'lightblue', 'lightsalmon')
+group_colors_borders = c(c('gray50', 'lightblue3', 'lightsalmon3'))
+# group_colors = c('lightblue', 'lightsalmon', 'darkgray') 
+# group_colors_borders = c(c('lightblue3', 'lightsalmon3', 'gray50'))
+
+
+node_colors = group_colors[as.numeric(nodes_data$category)]
+border_colors = group_colors_borders[as.numeric(nodes_data$category)]
+```
+
+
+
+## Creazione grafo non direzionato
+
+```{r}
+marvel_Ugraph = graph_from_data_frame(d=edges_data, vertices=nodes_data, directed=F)
+
+set.seed(myseed)
+#my_layout = layout_with_fr#(marvel_Ugraph, start.temp = 100, niter=3000)
+layout_full <- layout_with_fr(marvel_Ugraph)
+
+conn = components(marvel_Ugraph)
+id_maxconn = which(conn$csize== max(conn$csize))
+nodes_maxconn = which(conn$membership == id_maxconn)
+edges_maxconn <- E(marvel_Ugraph)[.from(nodes_maxconn) & .to(nodes_maxconn)]
+
+V(marvel_Ugraph)$name = nodes_data$id
+V(marvel_Ugraph)$category = nodes_data$category
+V(marvel_Ugraph)$size = 3.5
+V(marvel_Ugraph)$color = node_colors
+V(marvel_Ugraph)$frame.color = border_colors
+V(marvel_Ugraph)$label.cex = 0.3
+V(marvel_Ugraph)$label.family = 'sans'
+V(marvel_Ugraph)$label.color='black'
+
+E(marvel_Ugraph)$width = 1#0.9
+E(marvel_Ugraph)[edges_maxconn]$width= 1.2
+E(marvel_Ugraph)$color = "darkolivegreen3" 
+E(marvel_Ugraph)[edges_maxconn]$color = "darkolivegreen" 
+
+par(mar = c(0, 0, 0, 0))
+set.seed(myseed)
+plot(marvel_Ugraph,
+     layout=layout_full,
+     vertex.color= 'cornsilk2', #'burlywood1',
+     vertex.frame.color = 'cornsilk3', #'burlywood3',
+     vertex.frame.width = 0.5,
+     edge.width = 0.5,
+)
+
+set.seed(myseed)
+plot(marvel_Ugraph,
+     layout=layout_full,
+     vertex.label = NA,
+)
+legend('topright', legend = levels(nodes_data$category), fill = group_colors, bty = 'n')
+par(mar=c(5,4,4,2)+0.1)
+
+marvel_Umaxconn = induced_subgraph(marvel_Ugraph, vids = nodes_maxconn, impl='create_from_scratch')
+```
+La rete presenta una grossa componente connessa, e poi altri sottografi  connessi molto più piccoli, riconducibili probabilmente a personaggi minori o presenti in serie poco soggette a *cross-over*.
+
+## Analisi descrittiva a livello di rete
+### Densità
+La densità $\rho \in [0,1]$ può essere considerata una stima della **probabilità di osservare un arco tra nodi selezionati casualmente.**
+\begin{equation}
+\rho = \frac{\text{# di archi}}{\text{max # di archi}} \in [0,1]
+\end{equation}
+
+### Reciprocità
+Nel caso di una **rete direzionata** l'indice di reciprocità $R$ punta a quantificare quanto sia forte la **tendenza a ricambiare una relazione:** è definita come la frazione $R$ di legami reciproci
+\begin{equation*}
+R = \frac{\text{# di archi reciproci}}{\text{# di archi}} \in [0,1]
+\end{equation*}
+
+* R = 0 implica che tutte le relazioni osservate tra i nodi nella rete non sono reciproche.
+* R = 1 implica che tutte le relazioni osservate tra i nodi nella rete sono reciproche (in una rete non direzionata, tale indice vale ovviamente sempre 1).
+
+### Transitività
+Nell'ambito delle **reti non direzionate,** la transitivà indica la **tendenza a formare legami a 3 tre** tra i nodi, ed è misurabile attraverso il coefficiente di transitività o di *clustering* $C$
+\begin{equation*}
+C = \frac{\text{# di cammini $chiusi$ di lunghezza 2}}{\text{# di cammini di lunghezza 2}} \in [0,1]
+\end{equation*}
+
+### Assortatività
+* L'**assortatività** o *omofilia* modella la possibilità di osservare legami tra nodi che sono simili tra loro piuttosto che tra quelli che non lo sono.
+* La **dissassortatività** o *eterofilia* indica lo schema opposto
+
+Limitando il concetto ad una **rete non direzionata (non pesata)** con $m$ archi $\{u_{ij}\} \in \{0,1\}$, e con **attributi nodali nominali** (*eroi*, *cattivi* e *antieroi*) $c_i$, l'**indice di assortatività** $r$ è definito attraverso la **modularità** $Q$, che confronta il **numero di archi all'interno delle comunità** con quello atteso in una **rete casuale**
+\begin{align*}
+r &= \frac{Q}{Q_{\max}} \in [-1,1]\\
+Q &= \frac{1}{2m} \sum_{ij}  u_{ij} - \frac{k_i k_j}{2m} \delta(c_i, c_j)\\
+\delta(c_i,c_j) &= \begin{cases} 1 & c_i=c_j \\ 0 & c_i \neq c_j\end{cases}
+\end{align*}
+essendo $k_n$ il **grado** (cioè il # di archi incidenti) del nodo $n$.
+
+In R è disponible la funzione *assortativity_nominal()* che calcola $r$ attraverso la **frazione $e_{ij}$ di archi che connettono i nodi di _tipo_ $c_i$ e _tipo_ $c_j$**:
+\begin{align*}
+r   &= \frac{\sum_i e_{ii} -\sum_i a_i b_i}{1-\sum_i a_i b_i}\\
+a_i &= \sum_j e_{ij} \\
+b_j &= \sum_i e_{ij}
+\end{align*}
+
+
+```{r}
+
+# grafo NON DIREZIONATO
+rho_u = edge_density( marvel_Ugraph)
+R_u = reciprocity(  marvel_Ugraph)
+C_u = transitivity( marvel_Ugraph)
+r_u = assortativity_nominal(marvel_Ugraph, V(marvel_Ugraph)$category)
+
+rho_c = edge_density( marvel_Umaxconn)
+R_c = reciprocity(  marvel_Umaxconn)
+C_c = transitivity( marvel_Umaxconn)
+r_c = assortativity_nominal(marvel_Umaxconn, V(marvel_Umaxconn)$category)
+
+table_graph <- data.frame(
+   "Whole" = c(rho_u, R_u, C_u, r_u),
+   "Maxconn" = c(rho_c, R_c, C_c, r_c),
+   row.names = c("Densità", "Reciprocità", "Transitività", "Assortatività")
+)
+table_graph$Whole = sprintf("%.3f", table_graph$Whole)
+table_graph$Maxconn = sprintf("%.3f", table_graph$Maxconn)
+
+
+(table_graph)
+```
+#### Osservazioni
+* la **densità** aumenta nel caso del sottografo massimamente connesso dato il minor numero di archi "mancanti" rispetto al grafo completo con tutte le altre componenti
+* la **bassa transitività** in entrambi i casi riflette la natura dei legami definiti dal concetto di "partnerships", trattandosi cioè di associazioni strette (tipo Iron-Man e War-Machine, che operano spesso in coppia) diverse dalle collaborazioni in team (tipo Avengers)
+* l'**assortatività positiva** (non trascurabile, in quanto **superiore a 0.6** sia nel grafo completo che per il sottografo maggiormente connesso) riflette la natura dell'attributo, ed è indice che i cattivi si legano solitamente ad altri cattivi e i buoni ad altri buoni.
+
+## Analisi descrittiva a livello di nodi
+Ci concentriamo qui sulla **componente maggiormente connessa `marvel_Umaxconn`:** del grafo non direzionato `marvel_Ugraph` con archi $u_{ij} \in \{0,1\}$: questo sia perché gli altri sottografi sono relativi a personaggi o serie molto meno rilevanti nell'universo Marvel, sia perché si vuole confrontare in modo "equo" i tre diversi concetti di centralità di seguito definiti.
+
+```{r}
+set.seed(myseed)
+indices_maxconn_in_ugraph = match(V(marvel_Umaxconn)$name, V(marvel_Ugraph)$name)
+layout_maxconn = layout_full[indices_maxconn_in_ugraph, ]
+set.seed(myseed)
+par(mar = c(0, 0, 0, 0))
+set.seed(myseed)
+plot(
+   marvel_Umaxconn,
+   layout = layout_maxconn,
+   edge.width = 0.5
+)
+legend('topright', legend = levels(nodes_data$category), fill = group_colors, bty = 'n')
+par(mar=c(5,4,4,2)+0.1)
+```
+
+### Degree Centrality (centralità di grado)
+Il **grado** (degree) $\zeta_i^d$ o la *centralità di grado* di un nodo $i$ indica il **numero di legami che coinvolgono $i$**
+\begin{equation*}
+\zeta_i^d = \sum_{ij} u_{ij}
+\end{equation*}
+Per una rete con $n$ nodi, $\zeta_i^d \in [0,n-1]$
+
+La sua versione normalizzata $\tilde\zeta_i^d$ è quindi definita come
+\begin{equation*}
+\tilde\zeta_i^d = \frac{\sum_{ij} u_{ij}}{n-1} \in [0,1]
+\end{equation*}
+
+**La centralità di grado fornisce informazioni sull'influenza diretta del nodo nella rete e sul suo accesso alle informazioni di prima mano**
+```{r}
+plot_centrality <- function(centr_norm, thr_q, scaleText=F)
+{
+   thr_norm = quantile(centr_norm, thr_q)
+   print(thr_norm)
+   nameoff = which(centr_norm<thr_norm)
+   showname = V(marvel_Umaxconn)$name
+   showname[nameoff] = NA
+   
+   cexText = 0.5
+   if (scaleText==T)
+      cexText = centr_norm*12
+      
+   par(mar=c(0,0,0,0))
+   plot(marvel_Umaxconn,
+        layout=layout_maxconn,
+        vertex.size = centr_norm*22,
+        vertex.label = showname,
+        vertex.label.cex = cexText,#0.5,
+        edge.width = 0.4
+   )
+   par(mar=c(5,4,4,2)+0.1)   
+}
+
+deg = degree(marvel_Umaxconn)
+deg_norm = degree(marvel_Umaxconn, normalized = T)
+
+par(mar=c(4,4,3,0))
+hist(deg_norm, freq=F, main='degree centrality', col='palegreen3', border='palegreen4')
+grid(lty='solid', lwd=0.5, col='white', nx=NA, ny=NULL)
+par(mar=c(5,4,4,2)+0.1)
+
+thr_q = 0.95
+plot_centrality(deg_norm, thr_q, T)
+
+ord = order(deg_norm, decreasing = T)
+degrank = data.frame(name = V(marvel_Umaxconn)$name[ord], degree = deg[ord], degnorm=deg_norm[ord])
+(degrank)
+```
+
+### Closeness centrality (centralità di prossimità)
+Per valutare la *prossimità* di un nodo rispetto agli altri nodi occorre prima introdurre introdurre la **farness** (*lontananza*) $l_i$ di un nodo
+\begin{equation*}
+l_i = \sum d_{ij}
+\end{equation*}
+essendo $d_{ij}$ la lunghezza del **cammino più breve** tra il nodo $i$ ed il nodo $j$.
+
+La **closeness** $\zeta_i^c$ di un nodo $i$ vale
+\begin{equation*}
+\zeta_i = \frac{1}{l_i}
+\end{equation*}
+
+Poiché il massimo di $\zeta_i^c$ si verifica quando $i$ è connesso a tutti quanti gli altri nodi della rete (*configurazione a stella*), cioè $\zeta_{\max}^c = 1/\sum_{i \neq j} 1 = 1/(n-1)$, la closeness normalizzata $\tilde\zeta_i^c$ vale
+\begin{equation*}
+\tilde\zeta_i^c = \frac{\zeta_i^c}{\zeta_{\max}^c} = \frac{n-1}{l_i} \in [0,1]
+\end{equation*}
+
+**La closeness è utilizzata per individuare nodi strategici per la trasmissione di informazioni: indica se un nodo ha un accesso rapido e diretto agli altri nodi**
+
+#### Osservazione
+Poiché  in `marvel_Ugraph` non esiste sempre almeno un cammino tra tutte le coppie di nodi), **applichiamo il concetto di closeness centrality solo al sottografo connesso più numeroso.**
+
+
+```{r}
+clo = closeness(marvel_Umaxconn)
+clo_norm = closeness(marvel_Umaxconn, normalized = T)
+
+par(mar=c(4,4,3,0))
+hist(clo_norm, freq=F, main='closeness centrality', col='palegreen3', border='palegreen4')
+grid(lty='solid', lwd=0.5, col='white', nx=NA, ny=NULL)
+par(mar=c(5,4,4,2)+0.1)
+
+plot_centrality(clo_norm, thr_q)
+
+ord = order(clo_norm, decreasing = T)
+clorank = data.frame(name = V(marvel_Umaxconn)$name[ord], closeness = clo[ord], clonorm=clo_norm[ord])
+(clorank)
+```
+
+### Betweenness centrality (centralità di intermediazione)
+L'idea alla base della betweenness centrality è che un **nodo sia maggiormente centrale per una data rete quanto più si trova tra molti altri nodi.**
+
+La betweenness $\zeta_i^b$ di un nodo $i$ è la **frazione dei cammini minimi che passano attraverso $i$**
+\begin{align*}
+\zeta_i^b &= \sum_{j>1} \sum_{k>j} \frac{n_{jk}^i}{g_{jk}} \qquad \textsf{con}\\
+\frac{n_{jk}^i}{g_{jk}} &= 0 \quad\textsf{se}\quad n_{jk}^i = g_{jk} = 0 \\
+n_{jk}^i &= \textsf{# di cammini minimi tra i nodi $j$ e $k$ passanti attraverso $i$}\\
+g_{jk} &= \textsf{# di cammini minimi tra i nodi $j$ e $k$ in totale}
+\end{align*}
+
+Poiché il massimo di $\zeta_i^b$ si verifica quando $i$ si trova su tutti i percorsi geodetici che collegano ogni coppia di altri nod, ossia si ha
+\begin{equation}
+n_{jk}^i=g_{jk}\enspace \forall\, (j,k) \quad \Rightarrow \quad \zeta_{\max}^b = \sum_{j>i} \sum_{k>i} 1 = \frac{(n-1)(n-2)}{2}
+\end{equation}
+il valore normalizzato $\hat\zeta_i^b$ è definito come
+\begin{equation}
+\tilde\zeta_i^b = \frac{\zeta_i^b}{(n-1)(n-2)}
+\end{equation}
+
+**La betweenness centrality aiuta ad identificare nodi strategici o vulnerabili in una rete: indica quanto un vertice sia cruciale come "snodo" per i flussi di informazioni o connessioni nel grafo.**
+
+#### Osservazione
+Coinvolgendo di nuovo i cammini minimi, anche in questo caso, prendiamo qui in considerazione solo il sottografo connesso più numeroso.
+
+```{r}
+bet = betweenness(marvel_Umaxconn)
+bet_norm = betweenness(marvel_Umaxconn, normalized = T)
+par(mar=c(4,4,3,0))
+hist(bet_norm, freq=F, main='betweenness centrality', col='palegreen3', border='palegreen4')
+grid(lty='solid', lwd=0.5, col='white', nx=NA, ny=NULL)
+par(mar=c(5,4,4,2)+0.1)
+plot_centrality(bet_norm, thr_q)
+
+ord = order(bet_norm, decreasing = T)
+betrank = data.frame(name = V(marvel_Umaxconn)$name[ord], betweenness = clo[ord], betnorm=bet_norm[ord])
+(betrank)
+```
+
+### Nodi importanti
+
+```{r centralitiesCmp, fig.width=7, fig.height=5}
+topnodes <- function(centr_norm, thr_q)
+{
+   thr_norm = quantile(centr_norm, thr_q)
+   idon = which(centr_norm>=thr_norm)
+   return(idon)
+}
+
+hc = quantile(clo_norm, thr_q)
+hb = quantile(bet_norm, thr_q)
+
+idtop_deg = topnodes(deg_norm, thr_q)
+idtop_clo = topnodes(clo_norm, thr_q)
+idtop_bet = topnodes(bet_norm, thr_q)
+
+idtop = union(union(idtop_deg, idtop_clo), idtop_bet)
+idxor = setdiff(union(idtop_deg, union(idtop_clo, idtop_bet)), intersect(idtop_deg, intersect(idtop_clo, idtop_bet)))
+idbest = intersect(intersect(idtop_deg, idtop_clo), idtop_bet)
+
+par(mar = c(4, 4, 2, 1))
+scaldeg = 6
+scores = data.frame(name =V(marvel_Umaxconn)$name, deg=deg, clo=clo_norm, bet=bet_norm)
+plot(scores$bet, scores$clo, 
+     ylab = 'Closeness', 
+     xlab = 'Betweenness',
+     main = 'Node centralities',
+     xlim = c(0,0.9),
+     cex = scores$deg/scaldeg, 
+     pch = 21, 
+     col = V(marvel_Umaxconn)$color,
+     bg = "white",
+     bty='n'
+)
+points(scores$bet[idtop_deg], scores$clo[idtop_deg], cex=scores$deg[idtop_deg]/scaldeg, 
+       pch = 21, col=V(marvel_Umaxconn)$color[idtop_deg], bg=V(marvel_Umaxconn)$color[idtop_deg])
+abline(h = hc, lty = 2)
+abline(v = hb, lty = 2)
+grid()
+text(y = hc, x = 0.86, '0.95 quantile', pos = 1, cex=0.7)
+text(x = hb, y = 0.215, '0.95 quantile', pos = 4, cex=0.7)
+text(cex=0.5, scores$bet[idxor], scores$clo[idxor], labels=scores$name[idxor], pos=4)
+text(cex=0.6, scores$bet[idbest], scores$clo[idbest], labels=scores$name[idbest], pos=4, font=2)
+
+mindeg = min(scores$deg)
+meddeg = 6
+maxdeg = max(scores$deg)
+legend_deg = c(mindeg/scaldeg, meddeg/scaldeg, maxdeg/scaldeg) 
+legend_degtext = c('1 (min)', '6 (0.95q.)', '12 (max)')
+
+legend('topright', cex = 0.7, bty='n',
+       legend = legend_degtext,
+       pt.cex = legend_deg,
+       pch=21, title='degree scale')
+legend('topleft', cex = 0.7, bty='n',
+       legend = c('antiheroes', 'heroes', 'villains'),
+       pt.cex = 1,
+       pch=15,
+       col = group_colors) #title = 'category:'
+legend('bottomright', cex=0.7, pch=15, pt.cex=1, col='black', bty='n',
+       legend = 'Filled points: degree > 0.95 quantile')
+#legend='degree over 0.95 quantile as filled points')
+
+par(mar = c(5, 4, 4, 2) + 0.1)
+```
+
+## Centralizzazione di un grafo
+
+Passiamo adesso agli **indici di centralizzazione** della rete: essi vanno a misurare il grado di eterogeneità dei nodi rispetto alla *centralità analizzata* (degree, closeness e betweenness):
+\begin{equation*}
+CI = \frac{\sum_i (C_{\max}-C_i)}{\max_Y \sum_i (C_{\max}-C_i)} \in [0,1]
+\end{equation*}
+
+* **$C_i$** è il valore di **centralità su ciascun nodo $i$,** e $C_{\max}=\max_i C_i$, 
+* con $\max_Y$ riferito su tutte le possibili configurazioni **($\Rightarrow$  conf. a stella)**
+
+Ne segue che
+
+* Per **$CI=0$,** tutti i nodi sono **ugualmente centrali** (*conf. a cerchio*)
+* Per **$CI=1$,** c'è un **solo nodo centrale** e gli altri minimalmente centrali (*conf. a stella*)
+
+```{r}
+CIdeg = centr_degree(marvel_Umaxconn, loops = F)$centralization
+CIclo = centr_clo(marvel_Umaxconn)$centralization
+CIbet = centr_betw(marvel_Umaxconn, directed = F)$centralization
+
+(c(CIdeg, CIclo, CIbet))
+#par(mar=c(5,4,4,2)+0.1) #mfrow = c(1,1),  
+par(mfrow = c(1,3))
+plot_centrality(deg_norm, thr_q, T); title(paste('deg. centr. ', round(CIdeg,3)))
+plot_centrality(clo_norm, thr_q);    title(paste('clo. centr. ', round(CIclo,3)))
+plot_centrality(bet_norm, thr_q);    title(paste('bet. centr. ', round(CIbet,3)))
+par(mfrow = c(1,1))
+
+```
+### Considerazioni
+
+* L'indice di **centralizzazione sulla degree** centrality misura quanto le connessioni siano concentrate in pochi nodi, ed il suo **basso valore** indica che le **connessioni sono distribuite in modo uniforme** tra i nodi, ossia 
+   - la maggior parte dei nodi nella rete ha un numero simile di connessioni dirette (sebbene alcuni nodi come Spider-Man e Capitan America abbiano più connessioni di altri, la differenza non è così marcata)
+   - non ci sono pochi nodi che dominano la rete con un numero eccessivo di connessioni (tipo conf. a cerchio).
+* L'indice di **centralizzazione sulla closeness** centrality indica quanto la "vicinanza" sia concentrata in pochi nodi (indice elevato) oppure le distanze medie tra i nodi sono più uniformi (indice basso); il **valore medio-basso** indica che **alcuni nodi sono più centrali** e possono raggiungere gli altri più facilmente, **ma la maggior parte non è eccessivamente lontana**
+* L'indice di **centralizzazione sulla betweenness** centrality indica quanto il controllo sui percorsi più brevi sia concentrato in pochi nodi, ed il suo **valore elevato** significa che **pochi "nodi ponte"** controllano un gran numero di percorsi più brevi, fungendo da **"colli di bottiglia"** nella rete (quindi la rimozione di un nodo con un'alta betweenness centrality può interrompere significativamente la comunicazione e l'interazione tra diverse parti della rete)
+
+La centralità superiore di **Spider-Man, Venom e Red Skull** in tutte le varianti considerate suggerisce che le loro interazioni e relazioni siano **cruciali per lo sviluppo delle trame**.
+
+Inoltre, considerando che **due di loro sono "cattivi"**, si capisce come **le loro trame** siano fondamentali all'interno della rete, in quanto **elementi che rompono gli equilibri.**
+
+
+
+# Stochastic Block Model
+Presupponendo un modello a blocchi latenti $B_1 \dots B_Q$, sia $\boldsymbol{\vartheta} = [\alpha_1 \dots \alpha_Q, \pi_{11} \dots \pi_{QQ}]^\top$ il vettore di parametri associato al modello, dove:
+
+* $\alpha_k$ rappresenta la *probabilità a priori* per il blocco $B_k$
+* $\pi_{ij}$ indica la probabilità di avere un arco tra un nodo afferente al blocco $B_i$ ed un nodo appartenente al blocco $B_j$
+
+Si vuole stimare i parametri $\boldsymbol{\vartheta}$ a massima verosimiglianza data una realizzazione $\mathtt{U}$ (il grafo in esame) per la matrice di adiacenza $\mathbf{Y}$:
+\begin{equation*}
+\hat{\boldsymbol{\vartheta}} = \arg \max_\vartheta \log \mathsf{P}(\mathbf{Y}=\mathtt{U}) = \arg \max_\vartheta \log \sum_{\mathtt{Z}} \mathsf{P}(\mathbf{Y}=\mathtt{Y}|\mathbf{Z}=\mathtt{Z}; \boldsymbol{\vartheta}) \mathsf{P}(\mathbf{Z}=\mathtt{Z}; \boldsymbol{\vartheta})
+\end{equation*}
+dove $\mathbf{Z} = \{z_{iq}\}$ è la matrice aleatoria di tutte le variabili latenti nel modello $z_{iq} = \boldsymbol{1}(\text{nodo $i \in$ blocco $B_q$})$.
+
+La determinazione di $\hat{\boldsymbol{\vartheta}}$ avviene tramite un algoritmo di Expectation-Maximization Variazionale che minizza un lower bound della log-likelihood attraverso una formulazione trattabile del problema.
+
+
+## SBS su `marvel_Umaxconn`
+A causa della **sparsità del grafo** in questione, SBM fa molta fatica a trovare dei blocchi latenti:
+
+* anche applicando SBM al sottografo `marvel_Umaxconn` (la componente maggiormente connessa), si hanno dei risultati poco soddisfacenti, come si può vedere di seguito;
+* **nel caso del grafo completo `marvel_Ugraph` addirittura viene restituito un solo unico blocco.**
+
+
+
+```{r}
+library(sbm)
+library(lattice)
+library(cowplot)
+
+Yconn = as_adjacency_matrix(marvel_Umaxconn, sparse=F)
+sbmConn = estimateSimpleSBM(Yconn, 'bernoulli', estimOptions=list(verbosity=0))
+
+
+plot1 <- ggdraw() + draw_plot({ plotMyMatrix(Yconn)})
+plot2 <- ggdraw() + draw_plot({ plot(sbmConn,type="data")})
+plot3 <- ggdraw() + draw_plot({ plot(sbmConn,"expected")})
+
+# Combina i grafici in una griglia 1x3
+plot_grid(plot1, plot2, plot3, nrow = 1)
+```
+
+## SBM su `marvel_Umaxconn` esteso
+
+### Estensione degli archi nel grafo
+Per poter valutare lo SBM in un contesto più ricco di connessioni tra i nodi, `marvel_Umaxconn` è stato esteso andando a recuperare per ogni personaggio relativo ai suoi **181 nodi** in quale fumetto avesse fatto la sua comparsa; ad esempio
+
+| Personaggio|1° Fumetto|
+|:---|:---|
+|Doctor Doom|Fantastic Four      |
+|Hulk       |The Incredible Hulk |
+|Iron Man   |Tales of Suspense   |
+| Loki      |Journey into Mystery|
+|Magneto    |The Uncanny X-Men   |
+|Thing      |Fantastic Four      |
+|Thor       |Journey into Mystery|
+
+
+Queste informazioni poi sono state impiegate per creare dei **nuovi archi** per ogni coppia di **personaggi apparsi nella stessa collana**, a testimonianza di un probabile legame di **interazione debole.**
+
+```{r}
+library(readxl)
+marvel_comics <- read_excel("marvel_comics.xlsx")
+pid <- marvel_comics$id
+for (n in 1:length(orig_char))
+{
+   pid[pid == orig_char[n]] = new_char[n]
+}
+pid = gsub("\\s*\\([^\\)]+\\)", "", pid)
+
+seq_pid = match(V(marvel_Umaxconn)$name, pid)
+pid = pid[seq_pid]
+comics = as.factor(marvel_comics$comics[seq_pid])
+
+score_comics <- table(comics)
+comics_rank <- sort(score_comics, decreasing=T)
+par(mar=c(9,4,2,0))
+barplot(comics_rank,
+        main = "Comics character ranking",
+        xlab = "",
+        ylab = "# characters",
+        col='palegreen3', border='palegreen4',
+        las = 2, # Etichette dell'asse x verticali
+        cex.names = 0.5 
+)
+grid(lty='solid', lwd=0.5, col='white', nx=NA, ny=NULL)
+par(mar=c(5,4,4,2)+0.1)
+```
+
+```{r}
+# Estensione del grafo marvel_Umaxconn
+V(marvel_Umaxconn)$comics = comics
+Yext = 2*as_adjacency_matrix(marvel_Umaxconn, sparse=F)
+for (i in 1:length(comics))
+{
+   pi = pid[i]
+   for (j in 1:length(comics)) 
+   {
+      pj = pid[j]
+      if (comics[i] == comics[j] && pi != pj) 
+      {
+         #Yext[pi, pj] =  1
+         #Yext[pj, pi] =  1
+         
+         if (Yext[pi, pj]==0)
+         {
+            Yext[pi, pj] = 1
+            Yext[pj, pi] = 1
+         }
+      }
+   }
+}
+marvel_Uext <- graph_from_adjacency_matrix(Yext, mode = 'undirected', weighted=T)
+V(marvel_Uext)$comics = comics
+V(marvel_Uext)$size = 3.5
+V(marvel_Uext)$label.cex = 0.3
+V(marvel_Uext)$label.family = 'sans'
+V(marvel_Uext)$label.color='black'
+E(marvel_Uext)$width = 0.6
+E(marvel_Uext)$color = "gray"
+
+
+color_comics <- rep("darkgray", length(comics_rank))
+color_comics[1:6] = c('lightskyblue', 'sandybrown', 'yellowgreen', 'pink', 'gold3', 'plum3')
+color_nodeByComics = rep("darkgray", vcount(marvel_Uext))
+for (i in 1:vcount(marvel_Uext)) {
+  com = V(marvel_Uext)$comics[i]
+    id_com = which(names(comics_rank) == com)
+    color_nodeByComics[i] = color_comics[id_com]
+}
+col_leg = c(color_comics[1:6], 'darkgray')
+lab_leg = c(names(comics_rank)[1:6], 'others')
+
+par(mar = c(0, 0, 0, 0)) #mfrow = c(1,2), 
+set.seed(myseed)
+plot(marvel_Umaxconn,
+     layout=layout_maxconn,
+     vertex.frame.width = 0.5,
+     vertex.color= color_nodeByComics,
+     edge.width = 0.1,
+)
+legend("topright", legend=lab_leg, fill=col_leg, title='Comics', bty='n', cex=0.6)
+par(mar=c(5,4,4,2)+0.1)
+
+color_edge = rep("lightgray", length(E(marvel_Uext)$weight))
+idstrong = which(E(marvel_Uext)$weight>1)
+color_edge[idstrong] = 'black'
+
+par(mar = c(0, 0, 0, 0))
+set.seed(myseed)
+plot(marvel_Uext,
+     layout=layout_maxconn,
+     vertex.frame.width = 0.5,
+     vertex.color= color_nodeByComics,#V(marvel_Uext)$comics,
+     edge.width = 0.1*E(marvel_Uext)$weight,
+     edge.color = color_edge#E(marvel_Uext)$weight,
+)
+legend("topright", legend=lab_leg, fill=col_leg, title='Comics', bty='n', cex=0.6)
+par(mar=c(5,4,4,2)+0.1) #mfrow = c(1,1),  
+```
+### Applicazione dello SBM
+
+#### Versione binarizzata (Bernoulli)
+
+![Selezione del # Q di blocchi latenti tramite ICL](ICLber.png)
+
+```{r plot_matrix_grid, fig.show='hold'}
+library(colorspace)
+
+Yext_binary <- ifelse(Yext > 0.5, 1, 0)
+sbm = estimateSimpleSBM(Yext_binary, 'bernoulli', estimOptions=list(verbosity=0))
+
+plot1 <- ggdraw() + draw_plot({ plotMyMatrix(Yext_binary) })
+plot2 <- ggdraw() + draw_plot({ plot(sbm, type = "data") })
+plot3 <- ggdraw() + draw_plot({ plot(sbm, "expected") })
+
+plot_grid(plot1, plot2, plot3, nrow = 1)
+```
+Nella figura superiore, da sinistra verso destra: la matrice di adiacenza binaria in ingresso, la matrice organizzata in blocchi e la sua versione in termini di probabilità (che rivedremo anche dopo).
+
+```{r}
+(sbm$blockProp)
+par(mar=c(4,4,3,0))
+barplot(sbm$blockProp,
+        main = "sbm$blockProp",
+        xlab = "blocks",
+        ylab = "prob.",
+        col='palegreen3', border='palegreen4',
+        # las = 2, 
+        cex.names = 1,
+        names.arg = 1:length(sbm$blockProp)
+)
+grid(lty='solid', lwd=0.5, col='white', nx=NA, ny=NULL)
+par(mar=c(5,4,4,2)+0.1)
+```
+Sopra, le **probabilità _a priori_ di appartenza dei vari nodi ai diversi blocchi.**
+
+
+```{r}
+# connectivity parameters
+(round(sbm$connectParam$mean,3))
+levelplot(sbm$connectParam$mean,
+          col.regions = colorRampPalette(c("yellow", "purple"))(100), 
+          main = 'sbm$connectParam$mean',
+          xlab = "Colonne", ylab = "Righe")
+```
+Sopra, le *probabilità di connessione intra- e inter- blocco* (con le righe ordinate dal basso verso l'alto); in questo caso, sebbene lo SBM non cerchi di proposito le comunità, sono stati ritrovati 8 cluster con alta probabilità interna, mentre i collegamenti tra blocchi diversi sono molto poco probabili.
+
+```{r}
+set.seed(myseed)
+par(mar=c(0,0,0,0))
+plot(sbm, type = "meso")
+par(mar=c(5,4,4,2)+0.1)
+```
+Sopra, la rappresentazione in forma *mesoscopica* della matrice precedente:
+
+* ogni nodo indica un blocco, di dimensioni proporzionali al # di nodi allocati in ognuno di essi
+* lo spessore degli archi è proporzionale alle probabilità di creare archi tra nodi di blocchi diversi (o dello stesso blocco, per gli archi *self loop*)
+
+
+#### Assegnamento dei nodi per blocco
+```{r}
+color_blocks = rep("darkgray", length(sbm$memberships))
+color_blocks[1:8] = c('dodgerblue2', 'orange', 'limegreen', 'pink', 'gold4', 'mediumorchid', 'gold', 'firebrick')
+
+block_rank = sort(sbm$memberships, decreasing=T)
+color_nodeByBlocks = rep("darkgray", vcount(marvel_Uext))
+for (i in 1:vcount(marvel_Uext)) 
+{
+   id_com = sbm$memberships[i]
+   color_nodeByBlocks[i] = color_blocks[id_com]
+}
+col_leg = c(color_blocks[1:9])
+lab_leg = c(1:9)
+#lab_leg <- c(names(color_blocks)[1:8], '>8')
+
+par(mar=c(0,0,0,0))
+plot(marvel_Uext,
+     layout=layout_maxconn,
+     vertex.frame.width = 0.5,
+     vertex.color= color_nodeByBlocks,#sbm$memberships,
+     edge.width = 0.1,
+)
+legend("topright", legend=lab_leg, fill=col_leg, title='Blocks', bty='n', cex=0.6)
+par(mar=c(5,4,4,2)+0.1)
+```
+![Confronto tra comics e blocchi](NodeByGroupsCmp.png)
+
+Di fatto SBM ha ritrovato un raggruppamento in base al fumetto di prima comparsa:
+
+* dal confronto visivo si nota che i primi 3 blocchi corrispondono ai primi tre fumetti, e anche per il sesto;
+* il blocco 5 dovrebbe corrispondere al fumetto #4 e viceversa (i fumetti #3,4,5 avevano la stessa numerosità di nodi)
+* il 7 blocco corrisponde al fumetto #7 per numerosità (Tales to Astonish, non indicato come codice colore)
+* per il gruppo 8, si veda la seguente tabella
+
+```{r}
+id7 = which(sbm$memberships==7)
+tab7 = data.frame(Personaggio = V(marvel_Uext)$name[id7], Fumetto = V(marvel_Uext)$comics[id7])
+(tab7)
+
+id8 = which(sbm$memberships==8)
+tab8 = data.frame(Personaggio = V(marvel_Uext)$name[id8], Fumetto = V(marvel_Uext)$comics[id8])
+(tab8)
+```
+
+
+#### Probabilità a posteriori di assegnazione di un nodo ai vari blocchi
+```{r}
+levelplot(t(sbm$probMemberships),
+          col.regions = colorRampPalette(c("yellow", "purple"))(100), 
+          main = 'sbm$probMemberships',
+          xlab = "blocchi", ylab = "nodi")
+```
+
+#### Versione pesata (Multinomiale???)
+```{r}
+# sbm = estimateSimpleSBM(Yext, 'poisson', estimOptions=list(verbosity=0))
+# 
+# plot1 <- ggdraw() + draw_plot({ plotMyMatrix(Yext) })
+# plot2 <- ggdraw() + draw_plot({ plot(sbm, type = "data") })
+# plot3 <- ggdraw() + draw_plot({ plot(sbm, "expected") })
+# 
+# plot_grid(plot1, plot2, plot3, nrow = 1)
+# 
+# block_rank = sort(sbm$memberships, decreasing=T)
+# color_nodeByBlocks = rep("darkgray", vcount(marvel_Uext))
+# for (i in 1:vcount(marvel_Uext)) 
+# {
+#    blk = sbm$memberships[i]
+#    id_com <- which(block_rank == blk)
+#    color_nodeByBlocks[i] = color_blocks[id_com[1]]
+# }
+# col_leg = c(color_blocks[1:8], 'darkgray')
+# lab_leg <- c(names(color_blocks)[1:8], '>8')
+# 
+# par(mar=c(0,0,0,0))
+# plot(marvel_Uext,
+#      layout=layout_maxconn,
+#      vertex.frame.width = 0.5,
+#      vertex.color= sbm$memberships,
+#      edge.width = 0.1,
+#      edge.color = color_edge,
+# )
+# par(mar=c(5,4,4,2)+0.1)
+# 
+# (sbm$blockProp)
+# par(mar=c(4,4,3,0))
+# barplot(sbm$blockProp,
+#         main = "sbm$blockProp",
+#         xlab = "blocks",
+#         ylab = "prob.",
+#         col='palegreen3', border='palegreen4',
+#         # las = 2, 
+#         cex.names = 1,
+#         names.arg = 1:length(sbm$blockProp)
+# )
+# grid(lty='solid', lwd=0.5, col='white', nx=NA, ny=NULL)
+# par(mar=c(5,4,4,2)+0.1)
+# 
+# # connectivity parameters
+# (round(sbm$connectParam$mean,3))
+# levelplot(sbm$connectParam$mean,
+#           col.regions = colorRampPalette(c("yellow", "purple"))(100), 
+#           main = 'sbm$connectParam$mean',
+#           xlab = "Colonne", ylab = "Righe")
+# 
+# set.seed(myseed)
+# par(mar=c(0,0,0,0))
+# plot(sbm, type = "meso")
+# par(mar=c(5,4,4,2)+0.1)
+```
+
+
