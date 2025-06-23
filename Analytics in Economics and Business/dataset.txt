@@ -1,0 +1,1 @@
+dataset slave_trade_QJE.dta available at https://nathannunn.sites.olt.ubc.ca/files/2022/02/DATA-22The-Long-Term-Effects-of-Africas-Slave-Trades22-slave_trade_qje_replication_dataset.zip
