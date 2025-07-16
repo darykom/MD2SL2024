@@ -56,6 +56,8 @@ Followed by Convolutional Neural Network (CNN) implementation and training in Py
 **Environmental Data Analysis** -  works in progress for commit
 
 ---
-## Thesis  
-**Federated Human Activity Recognition** - This study proposes a Human Activity Recognition system using smartphone sensor data, where RNN and LSTM models encode motion into embeddings for MLP classification, extended with federated learning via Flower and validated on the DAGHAR dataset.  
+## License / Copyright Notice
 
+These materials are shared for portfolio purposes.  
+You may view and share them for non-commercial use with proper attribution.  
+For any other use, including reproduction or commercial use, please contact the maintainer.
